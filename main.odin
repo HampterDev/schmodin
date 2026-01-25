@@ -20,6 +20,9 @@ main :: proc() {
 
     log("Starting application...")
 
+    // Test GRF reading
+    test_grf()
+
     ctx: Context
 
     if !init_window(&ctx) {
