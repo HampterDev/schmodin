@@ -18,12 +18,12 @@ create_pipeline :: proc(ctx: ^Context) -> bool {
         size       = size_of(Push_Constants),
     }
 
-    // Pipeline layout with bindless set (still needed for push constants/descriptors)
-    layouts := [1]vk.DescriptorSetLayout{ctx.bindless_layout}
+    // Pipeline layout with bindless set (set 0) and lightmap set (set 1)
+    layouts := [2]vk.DescriptorSetLayout{ctx.bindless_layout, ctx.lightmap_layout}
 
     layout_info := vk.PipelineLayoutCreateInfo{
         sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-        setLayoutCount         = 1,
+        setLayoutCount         = 2,
         pSetLayouts            = &layouts[0],
         pushConstantRangeCount = 1,
         pPushConstantRanges    = &push_constant_range,
@@ -62,7 +62,7 @@ create_pipeline :: proc(ctx: ^Context) -> bool {
         codeSize               = len(VERT_SPV_RAW),
         pCode                  = raw_data(vert_aligned),
         pName                  = "main",
-        setLayoutCount         = 1,
+        setLayoutCount         = 2,
         pSetLayouts            = &layouts[0],
         pushConstantRangeCount = 1,
         pPushConstantRanges    = &push_constant_range,
@@ -78,7 +78,7 @@ create_pipeline :: proc(ctx: ^Context) -> bool {
         codeSize               = len(FRAG_SPV_RAW),
         pCode                  = raw_data(frag_aligned),
         pName                  = "main",
-        setLayoutCount         = 1,
+        setLayoutCount         = 2,
         pSetLayouts            = &layouts[0],
         pushConstantRangeCount = 1,
         pPushConstantRanges    = &push_constant_range,

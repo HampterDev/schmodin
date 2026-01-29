@@ -4,6 +4,7 @@ import "core:bytes"
 import "core:compress/zlib"
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sys/windows"
 
 // GRF format constants
@@ -559,6 +560,26 @@ grf_manager_get_data :: proc(mgr: ^Grf_Manager, file_name: string) -> (data: []u
         }
     }
     return nil, false
+}
+
+// List all files with a given extension (e.g., ".rsw")
+grf_list_files :: proc(grf: ^Grf, extension: string) -> []string {
+    results := make([dynamic]string)
+
+    for name, _ in grf.file_table {
+        if strings.has_suffix(strings.to_lower(name), extension) {
+            // Convert CP949 to UTF-8 for display
+            utf8_name, ok := cp949_to_utf8(transmute([]u8)name)
+            if ok {
+                append(&results, utf8_name)
+            } else {
+                // Fallback to raw name
+                append(&results, strings.clone(name))
+            }
+        }
+    }
+
+    return results[:]
 }
 
 // Test function to verify GRF reading works

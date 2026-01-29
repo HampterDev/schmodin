@@ -12,7 +12,17 @@ import "core:os"
 import vk "vendor:vulkan"
 import "vendor:glfw"
 
+// Set console to UTF-8 mode for Korean text
+foreign import kernel32 "system:Kernel32.lib"
+@(default_calling_convention = "stdcall")
+foreign kernel32 {
+    SetConsoleOutputCP :: proc(wCodePageID: u32) -> i32 ---
+}
+
 main :: proc() {
+    // Enable UTF-8 console output for Korean text
+    SetConsoleOutputCP(65001)
+
     // Open log file for debugging
     log_file_handle, err := os.open("vulkan_log.txt", os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o644)
     log_file = log_file_handle if err == os.ERROR_NONE else os.INVALID_HANDLE
@@ -20,8 +30,10 @@ main :: proc() {
 
     log("Starting application...")
 
-    // Test GRF reading
+    // Test GRF, RSW, and GND reading
     test_grf()
+    test_rsw()
+    test_gnd()
 
     ctx: Context
 
@@ -40,21 +52,20 @@ main :: proc() {
     }
     defer cleanup_vulkan(&ctx)
 
-    log("Entering main loop")
-    main_loop(&ctx)
-    log("Exiting")
-}
+    // Mark Vulkan as ready (guards resize callback)
+    ctx.vulkan_initialized = true
 
-init_window :: proc(ctx: ^Context) -> bool {
-    if glfw.Init() != true {
-        return false
+    // Apply deferred fullscreen (after Vulkan is ready)
+    if ctx.start_fullscreen {
+        toggle_fullscreen(&ctx)
     }
 
-    glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-    glfw.WindowHint(glfw.RESIZABLE, glfw.FALSE)
+    log("Entering main loop")
+    main_loop(&ctx)
 
-    ctx.window = glfw.CreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Modern Vulkan - Odin", nil, nil)
-    return ctx.window != nil
+    // Save app state while window is still valid
+    save_app_state(&ctx)
+    log("Exiting")
 }
 
 init_vulkan :: proc(ctx: ^Context) -> bool {
@@ -77,6 +88,8 @@ init_vulkan :: proc(ctx: ^Context) -> bool {
     if !create_depth_resources(ctx)    { log("Failed: create_depth_resources"); return false }
     log("Creating bindless resources...")
     if !create_bindless_resources(ctx) { log("Failed: create_bindless_resources"); return false }
+    log("Creating lightmap descriptor...")
+    if !create_lightmap_descriptor(ctx) { log("Failed: create_lightmap_descriptor"); return false }
     log("Creating pipeline...")
     if !create_pipeline(ctx)           { log("Failed: create_pipeline"); return false }
     log("Creating command resources...")
@@ -85,6 +98,8 @@ init_vulkan :: proc(ctx: ^Context) -> bool {
     if !create_sync_objects(ctx)       { log("Failed: create_sync_objects"); return false }
     log("Creating vertex buffer...")
     if !create_vertex_buffer(ctx)      { log("Failed: create_vertex_buffer"); return false }
+    log("Initializing UI...")
+    if !ui_init(ctx)                   { log("Failed: ui_init"); return false }
 
     log("Vulkan initialized successfully")
     return true

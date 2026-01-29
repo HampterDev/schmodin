@@ -1,6 +1,7 @@
 package main
 
 import vk "vendor:vulkan"
+import "vendor:glfw"
 
 create_swapchain :: proc(ctx: ^Context) -> bool {
     // Query surface capabilities
@@ -14,9 +15,10 @@ create_swapchain :: proc(ctx: ^Context) -> bool {
     defer delete(formats)
     vk.GetPhysicalDeviceSurfaceFormatsKHR(ctx.physical_device, ctx.surface, &format_count, raw_data(formats))
 
+    // Use UNORM to match DX9's gamma-incorrect pipeline
     chosen_format := formats[0]
-    for format in formats {
-        if format.format == .B8G8R8A8_SRGB && format.colorSpace == .SRGB_NONLINEAR {
+    for &format in formats {
+        if format.format == .B8G8R8A8_UNORM && format.colorSpace == .SRGB_NONLINEAR {
             chosen_format = format
             break
         }
@@ -85,6 +87,73 @@ create_swapchain :: proc(ctx: ^Context) -> bool {
             },
         }
         if vk.CreateImageView(ctx.device, &view_info, nil, &ctx.swapchain_views[i]) != .SUCCESS {
+            return false
+        }
+    }
+
+    return true
+}
+
+// Clean up swapchain resources (for recreation)
+cleanup_swapchain :: proc(ctx: ^Context) {
+    vk.DeviceWaitIdle(ctx.device)
+
+    // Destroy depth resources
+    vk.DestroyImageView(ctx.device, ctx.depth_view, nil)
+    vk.DestroyImage(ctx.device, ctx.depth_image, nil)
+    vk.FreeMemory(ctx.device, ctx.depth_memory, nil)
+
+    // Destroy swapchain image views
+    for view in ctx.swapchain_views {
+        vk.DestroyImageView(ctx.device, view, nil)
+    }
+    delete(ctx.swapchain_views)
+    delete(ctx.swapchain_images)
+
+    // Destroy render_finished semaphores (one per swapchain image)
+    for sem in ctx.render_finished {
+        vk.DestroySemaphore(ctx.device, sem, nil)
+    }
+    delete(ctx.render_finished)
+
+    // Destroy swapchain
+    vk.DestroySwapchainKHR(ctx.device, ctx.swapchain, nil)
+}
+
+// Recreate swapchain after window resize
+recreate_swapchain :: proc(ctx: ^Context) -> bool {
+    // Handle minimization - wait until window has non-zero size
+    width, height := glfw.GetFramebufferSize(ctx.window)
+    for width == 0 || height == 0 {
+        width, height = glfw.GetFramebufferSize(ctx.window)
+        glfw.WaitEvents()
+    }
+
+    vk.DeviceWaitIdle(ctx.device)
+
+    // Clean up old swapchain resources
+    cleanup_swapchain(ctx)
+
+    // Recreate swapchain
+    if !create_swapchain(ctx) {
+        log("Failed to recreate swapchain")
+        return false
+    }
+
+    // Recreate depth resources
+    if !create_depth_resources(ctx) {
+        log("Failed to recreate depth resources")
+        return false
+    }
+
+    // Recreate render_finished semaphores (one per swapchain image)
+    ctx.render_finished = make([]vk.Semaphore, len(ctx.swapchain_images))
+    for i in 0..<len(ctx.swapchain_images) {
+        sem_info := vk.SemaphoreCreateInfo{
+            sType = .SEMAPHORE_CREATE_INFO,
+        }
+        if vk.CreateSemaphore(ctx.device, &sem_info, nil, &ctx.render_finished[i]) != .SUCCESS {
+            log("Failed to recreate render_finished semaphore")
             return false
         }
     }

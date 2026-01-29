@@ -1,6 +1,11 @@
 *.exe
+*.pdb
+*.obj
 *.txt
 *.log
 *.grf
+*.cfg
 
 .claude
+dhxj_-_Client_Source
+ragnarok

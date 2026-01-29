@@ -4,12 +4,153 @@ import vk "vendor:vulkan"
 import "vendor:glfw"
 
 main_loop :: proc(ctx: ^Context) {
+    last_time := glfw.GetTime()
+
     for !glfw.WindowShouldClose(ctx.window) {
+        current_time := glfw.GetTime()
+        delta_time := f32(current_time - last_time)
+        last_time = current_time
+
         glfw.PollEvents()
+
+        // Process UI input and build UI
+        ui_process_input(ctx)
+        ui_build(ctx)
+
+        // Handle map reload if requested
+        if ctx.map_needs_reload && len(ctx.available_maps) > 0 {
+            ctx.map_needs_reload = false
+            new_map := ctx.available_maps[ctx.current_map_index]
+            reload_map(ctx, new_map)
+        }
+
+        update_camera(ctx, delta_time)
         draw_frame(ctx)
     }
 
     vk.DeviceWaitIdle(ctx.device)
+}
+
+// Update camera based on keyboard and mouse input
+update_camera :: proc(ctx: ^Context, dt: f32) {
+    move_speed: f32 = 200.0  // Units per second
+    look_speed: f32 = 1.5    // Radians per second
+    mouse_sensitivity: f32 = 0.003  // Radians per pixel
+
+    // Get direction vectors from quaternion
+    forward := quat_forward(ctx.camera_rot)
+    right := quat_right(ctx.camera_rot)
+
+    // Movement (WASD) - move along XZ plane only
+    forward_xz := vec3_normalize(Vec3{forward.x, 0, forward.z})
+    right_xz := vec3_normalize(Vec3{right.x, 0, right.z})
+
+    if glfw.GetKey(ctx.window, glfw.KEY_W) == glfw.PRESS {
+        ctx.camera_pos.x += forward_xz.x * move_speed * dt
+        ctx.camera_pos.z += forward_xz.z * move_speed * dt
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_S) == glfw.PRESS {
+        ctx.camera_pos.x -= forward_xz.x * move_speed * dt
+        ctx.camera_pos.z -= forward_xz.z * move_speed * dt
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_A) == glfw.PRESS {
+        ctx.camera_pos.x -= right_xz.x * move_speed * dt
+        ctx.camera_pos.z -= right_xz.z * move_speed * dt
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_D) == glfw.PRESS {
+        ctx.camera_pos.x += right_xz.x * move_speed * dt
+        ctx.camera_pos.z += right_xz.z * move_speed * dt
+    }
+
+    // Up/Down (Space/Ctrl)
+    if glfw.GetKey(ctx.window, glfw.KEY_SPACE) == glfw.PRESS {
+        ctx.camera_pos.y += move_speed * dt
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS {
+        ctx.camera_pos.y -= move_speed * dt
+    }
+
+    // Skip mouse/scroll camera controls when UI is active
+    ui_active := ui_wants_mouse()
+
+    // Mouse scroll zoom (move along forward direction)
+    if ctx.scroll_delta != 0 {
+        if !ui_active {
+            zoom_speed: f32 = 50.0  // Units per scroll tick
+            ctx.camera_pos.x += forward.x * ctx.scroll_delta * zoom_speed
+            ctx.camera_pos.y += forward.y * ctx.scroll_delta * zoom_speed
+            ctx.camera_pos.z += forward.z * ctx.scroll_delta * zoom_speed
+        }
+        ctx.scroll_delta = 0  // Always reset after consuming
+    }
+
+    // Right mouse button drag for looking around
+    mouse_x, mouse_y := glfw.GetCursorPos(ctx.window)
+    rmb_pressed := glfw.GetMouseButton(ctx.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS
+
+    if rmb_pressed && !ui_active {
+        if ctx.mouse_captured {
+            // Calculate mouse delta
+            delta_x := f32(mouse_x - ctx.last_mouse_x)
+            delta_y := f32(mouse_y - ctx.last_mouse_y)
+
+            // Yaw rotation (horizontal mouse movement)
+            if delta_x != 0 {
+                yaw_rot := quat_from_axis_angle(Vec3{0, 1, 0}, delta_x * mouse_sensitivity)
+                ctx.camera_rot = quat_normalize(quat_mul(yaw_rot, ctx.camera_rot))
+            }
+
+            // Pitch rotation (vertical mouse movement)
+            if delta_y != 0 {
+                pitch_rot := quat_from_axis_angle(Vec3{1, 0, 0}, delta_y * mouse_sensitivity)
+                ctx.camera_rot = quat_normalize(quat_mul(ctx.camera_rot, pitch_rot))
+            }
+        }
+        ctx.mouse_captured = true
+    } else {
+        ctx.mouse_captured = false
+    }
+    ctx.last_mouse_x = mouse_x
+    ctx.last_mouse_y = mouse_y
+
+    // Toggle fog with F key (edge triggered)
+    f_pressed := glfw.GetKey(ctx.window, glfw.KEY_F) == glfw.PRESS
+    if f_pressed && !ctx.f_key_was_pressed {
+        ctx.fog_enabled = !ctx.fog_enabled
+    }
+    ctx.f_key_was_pressed = f_pressed
+
+    // Cycle polygon mode with V key (FILL -> LINE -> POINT -> FILL)
+    v_pressed := glfw.GetKey(ctx.window, glfw.KEY_V) == glfw.PRESS
+    if v_pressed && !ctx.v_key_was_pressed {
+        ctx.polygon_mode = (ctx.polygon_mode + 1) % 3
+    }
+    ctx.v_key_was_pressed = v_pressed
+
+    // Toggle fullscreen with F11
+    f11_pressed := glfw.GetKey(ctx.window, glfw.KEY_F11) == glfw.PRESS
+    if f11_pressed && !ctx.f11_key_was_pressed {
+        toggle_fullscreen(ctx)
+    }
+    ctx.f11_key_was_pressed = f11_pressed
+
+    // Arrow keys still work for looking around
+    if glfw.GetKey(ctx.window, glfw.KEY_LEFT) == glfw.PRESS {
+        yaw_rot := quat_from_axis_angle(Vec3{0, 1, 0}, -look_speed * dt)
+        ctx.camera_rot = quat_normalize(quat_mul(yaw_rot, ctx.camera_rot))
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_RIGHT) == glfw.PRESS {
+        yaw_rot := quat_from_axis_angle(Vec3{0, 1, 0}, look_speed * dt)
+        ctx.camera_rot = quat_normalize(quat_mul(yaw_rot, ctx.camera_rot))
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_UP) == glfw.PRESS {
+        pitch_rot := quat_from_axis_angle(Vec3{1, 0, 0}, -look_speed * dt)
+        ctx.camera_rot = quat_normalize(quat_mul(ctx.camera_rot, pitch_rot))
+    }
+    if glfw.GetKey(ctx.window, glfw.KEY_DOWN) == glfw.PRESS {
+        pitch_rot := quat_from_axis_angle(Vec3{1, 0, 0}, look_speed * dt)
+        ctx.camera_rot = quat_normalize(quat_mul(ctx.camera_rot, pitch_rot))
+    }
 }
 
 draw_frame :: proc(ctx: ^Context) {
@@ -23,7 +164,10 @@ draw_frame :: proc(ctx: ^Context) {
     result := vk.AcquireNextImageKHR(ctx.device, ctx.swapchain, max(u64),
         ctx.image_available[frame], 0, &image_index)
 
-    if result != .SUCCESS {
+    if result == .ERROR_OUT_OF_DATE_KHR {
+        recreate_swapchain(ctx)
+        return
+    } else if result != .SUCCESS && result != .SUBOPTIMAL_KHR {
         return
     }
 
@@ -91,7 +235,7 @@ draw_frame :: proc(ctx: ^Context) {
         imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
         loadOp      = .CLEAR,
         storeOp     = .STORE,
-        clearValue  = vk.ClearValue{color = vk.ClearColorValue{float32 = {0.1, 0.1, 0.1, 1.0}}},
+        clearValue  = vk.ClearValue{color = vk.ClearColorValue{float32 = {0.0, 0.0, 0.0, 1.0}}},
     }
 
     depth_attachment := vk.RenderingAttachmentInfo{
@@ -124,18 +268,27 @@ draw_frame :: proc(ctx: ^Context) {
     null_shaders := [3]vk.ShaderEXT{}
     vk.CmdBindShadersEXT(cmd, 3, &unused_stages[0], &null_shaders[0])
 
-    // Bind descriptor buffer (replaces vkCmdBindDescriptorSets)
-    buffer_binding := vk.DescriptorBufferBindingInfoEXT{
-        sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
-        address = ctx.descriptor_buffer_address,
-        usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
+    // Bind descriptor buffers (replaces vkCmdBindDescriptorSets)
+    // Buffer 0: bindless textures (set 0), Buffer 1: lightmap (set 1)
+    buffer_bindings := [2]vk.DescriptorBufferBindingInfoEXT{
+        {
+            sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+            address = ctx.descriptor_buffer_address,
+            usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
+        },
+        {
+            sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+            address = ctx.lightmap_descriptor_buffer_address,
+            usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
+        },
     }
-    vk.CmdBindDescriptorBuffersEXT(cmd, 1, &buffer_binding)
+    vk.CmdBindDescriptorBuffersEXT(cmd, 2, &buffer_bindings[0])
 
-    // Set descriptor buffer offsets (equivalent to binding descriptor set at index 0)
-    buffer_index: u32 = 0
-    offset: vk.DeviceSize = 0
-    vk.CmdSetDescriptorBufferOffsetsEXT(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 1, &buffer_index, &offset)
+    // Set descriptor buffer offsets for both sets
+    // buffer_indices[i] tells which bound buffer to use for set i
+    buffer_indices := [2]u32{0, 1}  // Set 0 uses buffer 0, Set 1 uses buffer 1
+    offsets := [2]vk.DeviceSize{0, 0}
+    vk.CmdSetDescriptorBufferOffsetsEXT(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 2, &buffer_indices[0], &offsets[0])
 
     // === ALL DYNAMIC STATE (Extended Dynamic State 1/2/3) ===
 
@@ -152,7 +305,8 @@ draw_frame :: proc(ctx: ^Context) {
 
     // Rasterization state (EDS1/2/3)
     vk.CmdSetRasterizerDiscardEnable(cmd, false)
-    vk.CmdSetPolygonModeEXT(cmd, .FILL)
+    polygon_modes := [3]vk.PolygonMode{.FILL, .LINE, .POINT}
+    vk.CmdSetPolygonModeEXT(cmd, polygon_modes[ctx.polygon_mode])
     vk.CmdSetCullMode(cmd, {})  // No culling
     vk.CmdSetFrontFace(cmd, .CLOCKWISE)
     vk.CmdSetDepthBiasEnable(cmd, false)
@@ -195,15 +349,41 @@ draw_frame :: proc(ctx: ^Context) {
     // No vertex bindings/attributes - using buffer device address
     vk.CmdSetVertexInputEXT(cmd, 0, nil, 0, nil)
 
-    // Push constants with buffer device address
+    // Push constants with buffer device address and MVP matrix
     push := Push_Constants{
-        vertices      = ctx.vertex_buffer_address,
-        texture_index = 0,
+        mvp               = camera_get_vp_matrix(ctx),
+        vertices          = ctx.vertex_buffer_address,
+        texture_index     = 0,
+        ambient           = {ctx.ambient_color.x, ctx.ambient_color.y, ctx.ambient_color.z},
+        diffuse           = {ctx.diffuse_color.x, ctx.diffuse_color.y, ctx.diffuse_color.z},
+        // Fog parameters
+        camera_pos        = {ctx.camera_pos.x, ctx.camera_pos.y, ctx.camera_pos.z},
+        fog_enabled       = ctx.fog_enabled ? 1 : 0,
+        fog_color         = {ctx.fog_color.x, ctx.fog_color.y, ctx.fog_color.z},
+        fog_start         = ctx.fog_start,
+        fog_end           = ctx.fog_end,
+        height_factor     = ctx.height_factor,
+        // Rendering component toggles
+        texture_enabled   = ctx.texture_enabled ? 1 : 0,
+        tile_color_enabled = ctx.tile_color_enabled ? 1 : 0,
+        ambient_enabled   = ctx.ambient_enabled ? 1 : 0,
+        shadowmap_enabled = ctx.shadowmap_enabled ? 1 : 0,
+        colormap_enabled  = ctx.colormap_enabled ? 1 : 0,
+        lighting_enabled  = ctx.lighting_enabled ? 1 : 0,
+        lightmap_posterize = ctx.lightmap_posterize ? 1 : 0,
+        // Directional light parameters
+        light_dir         = {ctx.light_dir.x, ctx.light_dir.y, ctx.light_dir.z},
     }
     vk.CmdPushConstants(cmd, ctx.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push_Constants), &push)
 
-    // Draw triangle (3 vertices)
-    vk.CmdDraw(cmd, 3, 1, 0, 0)
+    // Draw mesh
+    vk.CmdDraw(cmd, ctx.vertex_count, 1, 0, 0)
+
+    // Reset polygon mode to FILL for UI (don't render UI as wireframe)
+    vk.CmdSetPolygonModeEXT(cmd, .FILL)
+
+    // Render UI overlay
+    ui_render(ctx, cmd)
 
     vk.CmdEndRendering(cmd)
 
@@ -277,7 +457,12 @@ draw_frame :: proc(ctx: ^Context) {
         pImageIndices      = &image_index,
     }
 
-    vk.QueuePresentKHR(ctx.present_queue, &present_info)
+    present_result := vk.QueuePresentKHR(ctx.present_queue, &present_info)
+
+    if present_result == .ERROR_OUT_OF_DATE_KHR || present_result == .SUBOPTIMAL_KHR || ctx.framebuffer_resized {
+        ctx.framebuffer_resized = false
+        recreate_swapchain(ctx)
+    }
 
     ctx.current_frame = (frame + 1) % MAX_FRAMES_IN_FLIGHT
 }

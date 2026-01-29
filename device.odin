@@ -165,6 +165,9 @@ create_logical_device :: proc(ctx: ^Context) -> bool {
     device_features := vk.PhysicalDeviceFeatures2{
         sType = .PHYSICAL_DEVICE_FEATURES_2,
         pNext = &features13,
+        features = vk.PhysicalDeviceFeatures{
+            samplerAnisotropy = true,  // Enable anisotropic filtering
+        },
     }
 
     create_info := vk.DeviceCreateInfo{
