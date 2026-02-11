@@ -49,12 +49,21 @@ Context :: struct {
     descriptor_buffer_address:    vk.DeviceAddress,
     descriptor_buffer_size:       vk.DeviceSize,
 
-    // Lightmap descriptor set (set 1)
-    lightmap_layout:                  vk.DescriptorSetLayout,
-    lightmap_descriptor_buffer:       vk.Buffer,
-    lightmap_descriptor_buffer_memory: vk.DeviceMemory,
-    lightmap_descriptor_buffer_address: vk.DeviceAddress,
-    lightmap_descriptor_buffer_size:  vk.DeviceSize,
+    // Map atlas descriptor buffers (sets 1, 2, 3 for shadow, light, lighting)
+    map_atlas_layout:             vk.DescriptorSetLayout,  // Shared layout for all atlas textures
+    shadow_descriptor_buffer:     vk.Buffer,
+    shadow_descriptor_memory:     vk.DeviceMemory,
+    shadow_descriptor_address:    vk.DeviceAddress,
+    light_descriptor_buffer:      vk.Buffer,
+    light_descriptor_memory:      vk.DeviceMemory,
+    light_descriptor_address:     vk.DeviceAddress,
+    lighting_descriptor_buffer:   vk.Buffer,
+    lighting_descriptor_memory:   vk.DeviceMemory,
+    lighting_descriptor_address:  vk.DeviceAddress,
+    half_lambert_descriptor_buffer:  vk.Buffer,
+    half_lambert_descriptor_memory:  vk.DeviceMemory,
+    half_lambert_descriptor_address: vk.DeviceAddress,
+    map_descriptor_size:          vk.DeviceSize,  // Size for each atlas descriptor buffer
 
     // Command resources
     command_pool:            vk.CommandPool,
@@ -75,8 +84,13 @@ Context :: struct {
     // Textures
     textures:                []Texture,
     sampler:                 vk.Sampler,
-    lightmap_atlas:          Texture,      // Combined lightmap atlas
-    lightmap_sampler:        vk.Sampler,   // Separate sampler for lightmaps
+
+    // Pre-computed map atlases (all use same UV as lightmap)
+    shadow_atlas:            Texture,      // Lightmap intensity (grayscale)
+    light_atlas:             Texture,      // Lightmap specular RGB
+    lighting_atlas:          Texture,      // Pre-computed N·L per cell
+    half_lambert_atlas:      Texture,      // Pre-computed Half-Lambert (N·L*0.5+0.5) per cell
+    map_sampler:             vk.Sampler,   // Shared sampler for map atlases
 
     // Framebuffer resize tracking
     framebuffer_resized:     bool,
@@ -105,21 +119,33 @@ Context :: struct {
     f11_key_was_pressed:     bool,  // For fullscreen toggle
     height_factor:           f32,   // 0=flat, 1=normal height (UI slider)
 
-    // Rendering component toggles
+    // Rendering component toggles (pre-computed maps)
     texture_enabled:         bool,  // Ground texture
     tile_color_enabled:      bool,  // Tile/vertex colors from GND surface
-    ambient_enabled:         bool,  // Ambient light addition
-    shadowmap_enabled:       bool,  // Lightmap shadow/intensity channel (alpha)
-    colormap_enabled:        bool,  // Lightmap color channel (RGB)
-    lighting_enabled:        bool,  // Directional lighting (N·L)
-    lightmap_posterize:      bool,  // Posterize lightmap (4-bit per channel like D3D7)
+    shadow_enabled:          bool,  // Lightmap shadow/intensity (pre-computed per vertex)
+    light_enabled:           bool,  // Lightmap specular RGB (pre-computed per vertex)
+    lighting_enabled:        bool,  // N·L directional lighting (pre-computed per vertex)
+    half_lambert_enabled:    bool,  // Half-Lambert lighting (N·L*0.5+0.5)
+    prelit_enabled:          bool,  // Per-vertex pre-computed lighting (all triangles)
 
-    // Lighting from RSW
-    ambient_color:           Vec3,
-    diffuse_color:           Vec3,
-    envdiff:                 Vec3,  // 1 - (1-diffuse)*(1-ambient)
+    // Lighting from RSW (used during mesh generation)
     light_dir:               Vec3,  // Normalized light direction
-    shadow_opacity:          f32,   // Light opacity/intensity multiplier
+    show_light_indicator:    bool,  // Debug: show sun sphere at light position
+
+    // Debug sun indicator geometry
+    sun_vertex_buffer:       vk.Buffer,
+    sun_vertex_memory:       vk.DeviceMemory,
+    sun_vertex_address:      vk.DeviceAddress,
+    sun_vertex_count:        u32,
+    map_center:              Vec3,  // Center of current map for sun positioning
+    map_radius:              f32,   // Radius to place sun indicator
+
+    // Debug normal arrows geometry
+    normal_arrow_buffer:     vk.Buffer,
+    normal_arrow_memory:     vk.DeviceMemory,
+    normal_arrow_address:    vk.DeviceAddress,
+    normal_arrow_count:      u32,   // Number of vertices (2 per arrow = line)
+    show_normal_arrows:      bool,  // Toggle for showing normal arrows
 
     // Fog parameters (from D3D trace)
     fog_enabled:             bool,
@@ -148,51 +174,61 @@ Context :: struct {
     ui_descriptor_buffer_memory: vk.DeviceMemory,
     ui_descriptor_buffer_address: vk.DeviceAddress,
     ui_descriptor_buffer_size: vk.DeviceSize,
+
+    // Player marker geometry
+    player_marker_buffer:    vk.Buffer,
+    player_marker_memory:    vk.DeviceMemory,
+    player_marker_address:   vk.DeviceAddress,
+    player_marker_count:     u32,
+
+    // Follow camera (Client mode)
+    player_pos:              Vec3,    // Authoritative player position (logical + visual offset)
+    camera_yaw:              f32,     // Orbit yaw around player (radians)
+    camera_pitch:            f32,     // Orbit pitch (radians, clamped)
+    camera_distance:         f32,     // Distance from player
+
+    // Networking
+    net_mode:    Net_Mode,
+    client_net:  Client_Net_State,
+
+    // Walkability grid (extracted from GND)
+    walkability:     Walkability_Grid,
+    lmb_was_pressed: bool,
 }
 
 // 4x4 Matrix (column-major for Vulkan/GLSL)
 Mat4 :: [4][4]f32
 
-// Push constants - matches shader layout
+// Push constants - matches shader layout (std430 alignment for vec3)
+// vec3 requires 16-byte alignment in std430, so we add padding
 Push_Constants :: struct {
-    mvp:               Mat4,              // Model-View-Projection matrix (64 bytes)
-    vertices:          vk.DeviceAddress,  // Buffer device address (8 bytes)
-    texture_index:     u32,
-    _pad0:             u32,
-    ambient:           [3]f32,            // RSW ambient color (0-1)
-    _pad1:             f32,
-    diffuse:           [3]f32,            // RSW diffuse color (0-1)
-    _pad2:             f32,
-    // Fog parameters (range-based linear fog)
-    camera_pos:        [3]f32,            // Camera position for range-based fog
-    fog_enabled:       u32,               // 1 = enabled, 0 = disabled
-    fog_color:         [3]f32,            // Fog color RGB (0-1)
-    fog_start:         f32,               // Fog start distance (161.468)
-    fog_end:           f32,               // Fog end distance (1416.0)
-    height_factor:     f32,               // 0=flat, 1=normal height
-    // Rendering component toggles
-    texture_enabled:   u32,               // 1 = sample texture, 0 = white
-    tile_color_enabled: u32,              // 1 = use tile/vertex colors, 0 = white
-    ambient_enabled:   u32,               // 1 = add ambient, 0 = skip
-    shadowmap_enabled: u32,               // 1 = use lightmap alpha (shadow), 0 = skip
-    colormap_enabled:  u32,               // 1 = use lightmap RGB (color), 0 = skip
-    lighting_enabled:  u32,               // 1 = directional lighting (N·L), 0 = skip
-    lightmap_posterize: u32,              // 1 = posterize lightmap (4-bit), 0 = smooth
-    _pad_toggle:       u32,               // Padding for alignment
-    // Directional light parameters
-    light_dir:         [3]f32,            // Normalized light direction (from RSW)
-    _pad3:             f32,               // Padding
+    mvp:                Mat4,              // offset 0, 64 bytes
+    vertices:           vk.DeviceAddress,  // offset 64, 8 bytes
+    _pad0:              [2]u32,            // offset 72, 8 bytes (align camera_pos to 16)
+    camera_pos:         [3]f32,            // offset 80, 12 bytes
+    fog_enabled:        u32,               // offset 92, 4 bytes
+    fog_color:          [3]f32,            // offset 96, 12 bytes (already 16-aligned)
+    fog_start:          f32,               // offset 108, 4 bytes
+    fog_end:            f32,               // offset 112, 4 bytes
+    height_factor:      f32,               // offset 116, 4 bytes
+    texture_enabled:    u32,               // offset 120, 4 bytes
+    tile_color_enabled: u32,               // offset 124, 4 bytes
+    shadow_enabled:      u32,               // offset 128, 4 bytes
+    light_enabled:       u32,               // offset 132, 4 bytes
+    lighting_enabled:    u32,               // offset 136, 4 bytes
+    half_lambert_enabled: u32,              // offset 140, 4 bytes
+    prelit_enabled:      u32,               // offset 144, 4 bytes
 }
 
 // Vertex data
 Vertex :: struct {
     pos:        [3]f32,
-    normal:     [3]f32,  // Surface normal for directional lighting
+    normal:     [3]f32,  // Surface normal (kept for debugging)
     color:      [3]f32,
     uv:         [2]f32,
-    lm_uv:      [2]f32,  // Lightmap UV coordinates
+    lm_uv:      [2]f32,  // Lightmap/atlas UV coordinates
     tex_index:  u32,     // Texture index for bindless texturing
-    _padding:   u32,     // Padding for alignment
+    prelit:     f32,     // Pre-computed lighting (half-lambert) for all triangles
 }
 
 // Texture resource

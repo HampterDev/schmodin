@@ -1,5 +1,6 @@
 package main
 
+import "core:math"
 import vk "vendor:vulkan"
 import "vendor:glfw"
 
@@ -24,7 +25,15 @@ main_loop :: proc(ctx: ^Context) {
             reload_map(ctx, new_map)
         }
 
-        update_camera(ctx, delta_time)
+        switch ctx.net_mode {
+        case .Offline:
+            update_camera(ctx, delta_time)
+        case .Client:
+            client_handle_click(ctx)
+            client_frame_update(ctx, f64(delta_time))
+            update_camera_follow(ctx, delta_time)
+        }
+
         draw_frame(ctx)
     }
 
@@ -153,6 +162,100 @@ update_camera :: proc(ctx: ^Context, dt: f32) {
     }
 }
 
+// Follow camera: orbits around player_pos, controlled by RMB drag + scroll.
+// Sets camera_pos and camera_rot based on player_pos + orbit parameters.
+update_camera_follow :: proc(ctx: ^Context, dt: f32) {
+    mouse_sensitivity: f32 = 0.005
+    ui_active := ui_wants_mouse()
+
+    // Scroll to change distance
+    if ctx.scroll_delta != 0 {
+        if !ui_active {
+            ctx.camera_distance -= ctx.scroll_delta * 30.0
+            if ctx.camera_distance < 50.0  do ctx.camera_distance = 50.0
+            if ctx.camera_distance > 1500.0 do ctx.camera_distance = 1500.0
+        }
+        ctx.scroll_delta = 0
+    }
+
+    // Right mouse button drag to orbit
+    mouse_x, mouse_y := glfw.GetCursorPos(ctx.window)
+    rmb_pressed := glfw.GetMouseButton(ctx.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS
+
+    if rmb_pressed && !ui_active {
+        if ctx.mouse_captured {
+            delta_x := f32(mouse_x - ctx.last_mouse_x)
+            delta_y := f32(mouse_y - ctx.last_mouse_y)
+
+            ctx.camera_yaw   += delta_x * mouse_sensitivity
+            ctx.camera_pitch -= delta_y * mouse_sensitivity
+
+            // Clamp pitch to avoid flipping
+            if ctx.camera_pitch < -1.4 do ctx.camera_pitch = -1.4
+            if ctx.camera_pitch > -0.05 do ctx.camera_pitch = -0.05
+        }
+        ctx.mouse_captured = true
+    } else {
+        ctx.mouse_captured = false
+    }
+    ctx.last_mouse_x = mouse_x
+    ctx.last_mouse_y = mouse_y
+
+    // Compute camera position from orbit parameters
+    // camera_pitch is negative (looking down), camera_yaw orbits around Y
+    cos_pitch := math.cos(ctx.camera_pitch)
+    sin_pitch := math.sin(ctx.camera_pitch)
+    cos_yaw   := math.cos(ctx.camera_yaw)
+    sin_yaw   := math.sin(ctx.camera_yaw)
+
+    // Offset from player: spherical coordinates
+    offset := Vec3{
+        sin_yaw * cos_pitch * ctx.camera_distance,
+        -sin_pitch * ctx.camera_distance,
+        cos_yaw * cos_pitch * ctx.camera_distance,
+    }
+
+    ctx.camera_pos = Vec3{
+        ctx.player_pos.x + offset.x,
+        ctx.player_pos.y + offset.y,
+        ctx.player_pos.z + offset.z,
+    }
+
+    // Look at player: construct quaternion from direction
+    // Direction from camera to player
+    dir := vec3_normalize(Vec3{
+        ctx.player_pos.x - ctx.camera_pos.x,
+        ctx.player_pos.y - ctx.camera_pos.y,
+        ctx.player_pos.z - ctx.camera_pos.z,
+    })
+
+    // Build rotation: yaw then pitch (matching the orbit)
+    yaw_q := quat_from_axis_angle(Vec3{0, 1, 0}, ctx.camera_yaw + math.PI)
+    pitch_q := quat_from_axis_angle(Vec3{1, 0, 0}, -ctx.camera_pitch)
+    ctx.camera_rot = quat_normalize(quat_mul(yaw_q, pitch_q))
+
+    // Toggle fog with F key (edge triggered)
+    f_pressed := glfw.GetKey(ctx.window, glfw.KEY_F) == glfw.PRESS
+    if f_pressed && !ctx.f_key_was_pressed {
+        ctx.fog_enabled = !ctx.fog_enabled
+    }
+    ctx.f_key_was_pressed = f_pressed
+
+    // Cycle polygon mode with V key
+    v_pressed := glfw.GetKey(ctx.window, glfw.KEY_V) == glfw.PRESS
+    if v_pressed && !ctx.v_key_was_pressed {
+        ctx.polygon_mode = (ctx.polygon_mode + 1) % 3
+    }
+    ctx.v_key_was_pressed = v_pressed
+
+    // Toggle fullscreen with F11
+    f11_pressed := glfw.GetKey(ctx.window, glfw.KEY_F11) == glfw.PRESS
+    if f11_pressed && !ctx.f11_key_was_pressed {
+        toggle_fullscreen(ctx)
+    }
+    ctx.f11_key_was_pressed = f11_pressed
+}
+
 draw_frame :: proc(ctx: ^Context) {
     frame := ctx.current_frame
 
@@ -269,8 +372,12 @@ draw_frame :: proc(ctx: ^Context) {
     vk.CmdBindShadersEXT(cmd, 3, &unused_stages[0], &null_shaders[0])
 
     // Bind descriptor buffers (replaces vkCmdBindDescriptorSets)
-    // Buffer 0: bindless textures (set 0), Buffer 1: lightmap (set 1)
-    buffer_bindings := [2]vk.DescriptorBufferBindingInfoEXT{
+    // Buffer 0: bindless textures (set 0)
+    // Buffer 1: shadow atlas (set 1)
+    // Buffer 2: light atlas (set 2)
+    // Buffer 3: lighting atlas (set 3)
+    // Buffer 4: half-lambert atlas (set 4)
+    buffer_bindings := [5]vk.DescriptorBufferBindingInfoEXT{
         {
             sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
             address = ctx.descriptor_buffer_address,
@@ -278,17 +385,31 @@ draw_frame :: proc(ctx: ^Context) {
         },
         {
             sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
-            address = ctx.lightmap_descriptor_buffer_address,
+            address = ctx.shadow_descriptor_address,
+            usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
+        },
+        {
+            sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+            address = ctx.light_descriptor_address,
+            usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
+        },
+        {
+            sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+            address = ctx.lighting_descriptor_address,
+            usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
+        },
+        {
+            sType   = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+            address = ctx.half_lambert_descriptor_address,
             usage   = {.RESOURCE_DESCRIPTOR_BUFFER_EXT},
         },
     }
-    vk.CmdBindDescriptorBuffersEXT(cmd, 2, &buffer_bindings[0])
+    vk.CmdBindDescriptorBuffersEXT(cmd, 5, &buffer_bindings[0])
 
-    // Set descriptor buffer offsets for both sets
-    // buffer_indices[i] tells which bound buffer to use for set i
-    buffer_indices := [2]u32{0, 1}  // Set 0 uses buffer 0, Set 1 uses buffer 1
-    offsets := [2]vk.DeviceSize{0, 0}
-    vk.CmdSetDescriptorBufferOffsetsEXT(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 2, &buffer_indices[0], &offsets[0])
+    // Set descriptor buffer offsets for all 5 sets
+    buffer_indices := [5]u32{0, 1, 2, 3, 4}  // Set i uses buffer i
+    offsets := [5]vk.DeviceSize{0, 0, 0, 0, 0}
+    vk.CmdSetDescriptorBufferOffsetsEXT(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 5, &buffer_indices[0], &offsets[0])
 
     // === ALL DYNAMIC STATE (Extended Dynamic State 1/2/3) ===
 
@@ -351,33 +472,103 @@ draw_frame :: proc(ctx: ^Context) {
 
     // Push constants with buffer device address and MVP matrix
     push := Push_Constants{
-        mvp               = camera_get_vp_matrix(ctx),
-        vertices          = ctx.vertex_buffer_address,
-        texture_index     = 0,
-        ambient           = {ctx.ambient_color.x, ctx.ambient_color.y, ctx.ambient_color.z},
-        diffuse           = {ctx.diffuse_color.x, ctx.diffuse_color.y, ctx.diffuse_color.z},
-        // Fog parameters
-        camera_pos        = {ctx.camera_pos.x, ctx.camera_pos.y, ctx.camera_pos.z},
-        fog_enabled       = ctx.fog_enabled ? 1 : 0,
-        fog_color         = {ctx.fog_color.x, ctx.fog_color.y, ctx.fog_color.z},
-        fog_start         = ctx.fog_start,
-        fog_end           = ctx.fog_end,
-        height_factor     = ctx.height_factor,
-        // Rendering component toggles
-        texture_enabled   = ctx.texture_enabled ? 1 : 0,
-        tile_color_enabled = ctx.tile_color_enabled ? 1 : 0,
-        ambient_enabled   = ctx.ambient_enabled ? 1 : 0,
-        shadowmap_enabled = ctx.shadowmap_enabled ? 1 : 0,
-        colormap_enabled  = ctx.colormap_enabled ? 1 : 0,
-        lighting_enabled  = ctx.lighting_enabled ? 1 : 0,
-        lightmap_posterize = ctx.lightmap_posterize ? 1 : 0,
-        // Directional light parameters
-        light_dir         = {ctx.light_dir.x, ctx.light_dir.y, ctx.light_dir.z},
+        mvp                = camera_get_vp_matrix(ctx),
+        vertices           = ctx.vertex_buffer_address,
+        camera_pos         = {ctx.camera_pos.x, ctx.camera_pos.y, ctx.camera_pos.z},
+        fog_enabled        = ctx.fog_enabled ? 1 : 0,
+        fog_color          = {ctx.fog_color.x, ctx.fog_color.y, ctx.fog_color.z},
+        fog_start          = ctx.fog_start,
+        fog_end            = ctx.fog_end,
+        height_factor      = ctx.height_factor,
+        // Rendering component toggles (pre-computed map atlases)
+        texture_enabled      = ctx.texture_enabled ? 1 : 0,
+        tile_color_enabled   = ctx.tile_color_enabled ? 1 : 0,
+        shadow_enabled       = ctx.shadow_enabled ? 1 : 0,
+        light_enabled        = ctx.light_enabled ? 1 : 0,
+        lighting_enabled     = ctx.lighting_enabled ? 1 : 0,
+        half_lambert_enabled = ctx.half_lambert_enabled ? 1 : 0,
+        prelit_enabled       = ctx.prelit_enabled ? 1 : 0,
     }
     vk.CmdPushConstants(cmd, ctx.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push_Constants), &push)
 
     // Draw mesh
     vk.CmdDraw(cmd, ctx.vertex_count, 1, 0, 0)
+
+    // Draw sun indicator if enabled
+    if ctx.show_light_indicator && ctx.sun_vertex_count > 0 {
+        // Calculate sun position: map_center + light_dir * radius
+        sun_pos := Vec3{
+            ctx.map_center.x + ctx.light_dir.x * ctx.map_radius,
+            ctx.map_center.y + ctx.light_dir.y * ctx.map_radius,
+            ctx.map_center.z + ctx.light_dir.z * ctx.map_radius,
+        }
+
+        // Create model matrix to translate sun to position
+        sun_model := mat4_translate(sun_pos)
+        sun_mvp := mat4_mul(camera_get_vp_matrix(ctx), sun_model)
+
+        // Push constants for sun (disable textures, just use vertex color)
+        sun_push := Push_Constants{
+            mvp                = sun_mvp,
+            vertices           = ctx.sun_vertex_address,
+            camera_pos         = {ctx.camera_pos.x, ctx.camera_pos.y, ctx.camera_pos.z},
+            fog_enabled        = 0,  // No fog on sun
+            height_factor      = 1.0,
+            texture_enabled    = 0,  // Use vertex color only
+            tile_color_enabled = 1,  // Enable vertex color
+            shadow_enabled     = 0,
+            light_enabled      = 0,
+            lighting_enabled   = 0,
+        }
+        vk.CmdPushConstants(cmd, ctx.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push_Constants), &sun_push)
+        vk.CmdDraw(cmd, ctx.sun_vertex_count, 1, 0, 0)
+    }
+
+    // Draw player marker in Client mode
+    if ctx.net_mode == .Client && ctx.player_marker_count > 0 {
+        marker_model := mat4_translate(ctx.player_pos)
+        marker_mvp := mat4_mul(camera_get_vp_matrix(ctx), marker_model)
+
+        marker_push := Push_Constants{
+            mvp                = marker_mvp,
+            vertices           = ctx.player_marker_address,
+            camera_pos         = {ctx.camera_pos.x, ctx.camera_pos.y, ctx.camera_pos.z},
+            fog_enabled        = 0,
+            height_factor      = 1.0,
+            texture_enabled    = 0,
+            tile_color_enabled = 1,
+            shadow_enabled     = 0,
+            light_enabled      = 0,
+            lighting_enabled   = 0,
+        }
+        vk.CmdPushConstants(cmd, ctx.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push_Constants), &marker_push)
+        vk.CmdDraw(cmd, ctx.player_marker_count, 1, 0, 0)
+    }
+
+    // Draw normal arrows if enabled
+    if ctx.show_normal_arrows && ctx.normal_arrow_count > 0 {
+        // Switch to line topology for arrows
+        vk.CmdSetPrimitiveTopology(cmd, .LINE_LIST)
+
+        // Push constants for arrows (use vertex color, no textures)
+        arrow_push := Push_Constants{
+            mvp                = camera_get_vp_matrix(ctx),
+            vertices           = ctx.normal_arrow_address,
+            camera_pos         = {ctx.camera_pos.x, ctx.camera_pos.y, ctx.camera_pos.z},
+            fog_enabled        = 0,  // No fog on arrows
+            height_factor      = ctx.height_factor,
+            texture_enabled    = 0,  // Use vertex color only
+            tile_color_enabled = 1,  // Enable vertex color
+            shadow_enabled     = 0,
+            light_enabled      = 0,
+            lighting_enabled   = 0,
+        }
+        vk.CmdPushConstants(cmd, ctx.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push_Constants), &arrow_push)
+        vk.CmdDraw(cmd, ctx.normal_arrow_count, 1, 0, 0)
+
+        // Restore triangle topology
+        vk.CmdSetPrimitiveTopology(cmd, .TRIANGLE_LIST)
+    }
 
     // Reset polygon mode to FILL for UI (don't render UI as wireframe)
     vk.CmdSetPolygonModeEXT(cmd, .FILL)

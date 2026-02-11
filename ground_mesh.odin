@@ -76,9 +76,18 @@ calc_smooth_normal :: proc(gnd: ^GND_Ground, cell_x, cell_y: i32, corner: int) -
     return Vec3{0, 1, 0}  // Default up
 }
 
+// Compute half-lambert lighting value from normal and light direction
+// Returns a value in [0.5, 1.0] range (half-lambert wraps around)
+compute_half_lambert :: proc(normal: [3]f32, light_dir: Vec3) -> f32 {
+    n := Vec3{normal[0], normal[1], normal[2]}
+    n_dot_l := vec3_dot(n, light_dir)
+    // Half-lambert: (N·L * 0.5 + 0.5), clamped to ensure valid range
+    return max(0.0, n_dot_l) * 0.5 + 0.5
+}
+
 // Generate mesh vertices from GND data with per-vertex lighting
 // Returns a slice of vertices that should be freed by the caller
-gnd_generate_mesh :: proc(gnd: ^GND_Ground, lighting: ^Ground_Lighting = nil) -> []Vertex {
+gnd_generate_mesh :: proc(gnd: ^GND_Ground, light_dir: Vec3 = Vec3{0, -1, 0}) -> []Vertex {
     // Count how many vertices we need
     // Each surface generates 2 triangles (6 vertices)
     vertex_count := 0
@@ -198,15 +207,21 @@ gnd_generate_mesh :: proc(gnd: ^GND_Ground, lighting: ^Ground_Lighting = nil) ->
 
                     tex_idx := u32(max(0, surface.texture_id))
 
+                    // Pre-compute half-lambert lighting for each corner
+                    prelit0 := compute_half_lambert(normal0, light_dir)
+                    prelit1 := compute_half_lambert(normal1, light_dir)
+                    prelit2 := compute_half_lambert(normal2, light_dir)
+                    prelit3 := compute_half_lambert(normal3, light_dir)
+
                     // Triangle 1: bottom-left, bottom-right, top-left (0, 1, 2)
-                    vertices[idx] = Vertex{pos = p0, normal = normal0, color = color0, uv = uv0, lm_uv = lm_uv0, tex_index = tex_idx}
-                    vertices[idx + 1] = Vertex{pos = p1, normal = normal1, color = color1, uv = uv1, lm_uv = lm_uv1, tex_index = tex_idx}
-                    vertices[idx + 2] = Vertex{pos = p2, normal = normal2, color = color2, uv = uv2, lm_uv = lm_uv2, tex_index = tex_idx}
+                    vertices[idx] = Vertex{pos = p0, normal = normal0, color = color0, uv = uv0, lm_uv = lm_uv0, tex_index = tex_idx, prelit = prelit0}
+                    vertices[idx + 1] = Vertex{pos = p1, normal = normal1, color = color1, uv = uv1, lm_uv = lm_uv1, tex_index = tex_idx, prelit = prelit1}
+                    vertices[idx + 2] = Vertex{pos = p2, normal = normal2, color = color2, uv = uv2, lm_uv = lm_uv2, tex_index = tex_idx, prelit = prelit2}
 
                     // Triangle 2: bottom-right, top-right, top-left (1, 3, 2)
-                    vertices[idx + 3] = Vertex{pos = p1, normal = normal1, color = color1, uv = uv1, lm_uv = lm_uv1, tex_index = tex_idx}
-                    vertices[idx + 4] = Vertex{pos = p3, normal = normal3, color = color3, uv = uv3, lm_uv = lm_uv3, tex_index = tex_idx}
-                    vertices[idx + 5] = Vertex{pos = p2, normal = normal2, color = color2, uv = uv2, lm_uv = lm_uv2, tex_index = tex_idx}
+                    vertices[idx + 3] = Vertex{pos = p1, normal = normal1, color = color1, uv = uv1, lm_uv = lm_uv1, tex_index = tex_idx, prelit = prelit1}
+                    vertices[idx + 4] = Vertex{pos = p3, normal = normal3, color = color3, uv = uv3, lm_uv = lm_uv3, tex_index = tex_idx, prelit = prelit3}
+                    vertices[idx + 5] = Vertex{pos = p2, normal = normal2, color = color2, uv = uv2, lm_uv = lm_uv2, tex_index = tex_idx, prelit = prelit2}
 
                     idx += 6
                 }
@@ -236,10 +251,10 @@ gnd_generate_mesh :: proc(gnd: ^GND_Ground, lighting: ^Ground_Lighting = nil) ->
                     w3 := [3]f32{base_x + gnd.zoom, -neighbor_h1, wall_z}      // neighbor corner 1
 
                     // Compute normal from geometry (cross product of edges)
-                    // This ensures the normal points toward the higher cell
+                    // Swap operands to get outward-facing normal (toward -Z for front wall)
                     edge1 := Vec3{w1[0] - w0[0], w1[1] - w0[1], w1[2] - w0[2]}
                     edge2 := Vec3{w2[0] - w0[0], w2[1] - w0[1], w2[2] - w0[2]}
-                    normal := vec3_normalize(vec3_cross(edge1, edge2))
+                    normal := vec3_normalize(vec3_cross(edge2, edge1))
                     wall_normal := [3]f32{normal.x, normal.y, normal.z}
 
                     // UVs from front surface
@@ -267,14 +282,17 @@ gnd_generate_mesh :: proc(gnd: ^GND_Ground, lighting: ^Ground_Lighting = nil) ->
 
                     wall_tex_idx := u32(max(0, front_surface.texture_id))
 
-                    // Two triangles forming a quad: w0-w1-w3 and w0-w3-w2
-                    vertices[idx] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx}
-                    vertices[idx + 1] = Vertex{pos = w1, normal = wall_normal, color = wall_color, uv = wuv1, lm_uv = wlm_uv1, tex_index = wall_tex_idx}
-                    vertices[idx + 2] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx}
+                    // Pre-compute half-lambert for wall (same normal for all vertices)
+                    wall_prelit := compute_half_lambert(wall_normal, light_dir)
 
-                    vertices[idx + 3] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx}
-                    vertices[idx + 4] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx}
-                    vertices[idx + 5] = Vertex{pos = w2, normal = wall_normal, color = wall_color, uv = wuv2, lm_uv = wlm_uv2, tex_index = wall_tex_idx}
+                    // Two triangles forming a quad: w0-w1-w3 and w0-w3-w2
+                    vertices[idx] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 1] = Vertex{pos = w1, normal = wall_normal, color = wall_color, uv = wuv1, lm_uv = wlm_uv1, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 2] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx, prelit = wall_prelit}
+
+                    vertices[idx + 3] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 4] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 5] = Vertex{pos = w2, normal = wall_normal, color = wall_color, uv = wuv2, lm_uv = wlm_uv2, tex_index = wall_tex_idx, prelit = wall_prelit}
 
                     idx += 6
                 }
@@ -305,9 +323,10 @@ gnd_generate_mesh :: proc(gnd: ^GND_Ground, lighting: ^Ground_Lighting = nil) ->
                     w3 := [3]f32{wall_x, -neighbor_h0, base_z}                 // neighbor corner 0 (bottom-left)
 
                     // Compute normal from geometry
+                    // Swap operands to get outward-facing normal (toward -X for right wall)
                     edge1 := Vec3{w1[0] - w0[0], w1[1] - w0[1], w1[2] - w0[2]}
                     edge2 := Vec3{w2[0] - w0[0], w2[1] - w0[1], w2[2] - w0[2]}
-                    normal := vec3_normalize(vec3_cross(edge1, edge2))
+                    normal := vec3_normalize(vec3_cross(edge2, edge1))
                     wall_normal := [3]f32{normal.x, normal.y, normal.z}
 
                     // UVs from right surface
@@ -335,14 +354,17 @@ gnd_generate_mesh :: proc(gnd: ^GND_Ground, lighting: ^Ground_Lighting = nil) ->
 
                     wall_tex_idx := u32(max(0, right_surface.texture_id))
 
-                    // Two triangles forming a quad: w0-w1-w3 and w0-w3-w2
-                    vertices[idx] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx}
-                    vertices[idx + 1] = Vertex{pos = w1, normal = wall_normal, color = wall_color, uv = wuv1, lm_uv = wlm_uv1, tex_index = wall_tex_idx}
-                    vertices[idx + 2] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx}
+                    // Pre-compute half-lambert for wall (same normal for all vertices)
+                    wall_prelit := compute_half_lambert(wall_normal, light_dir)
 
-                    vertices[idx + 3] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx}
-                    vertices[idx + 4] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx}
-                    vertices[idx + 5] = Vertex{pos = w2, normal = wall_normal, color = wall_color, uv = wuv2, lm_uv = wlm_uv2, tex_index = wall_tex_idx}
+                    // Two triangles forming a quad: w0-w1-w3 and w0-w3-w2
+                    vertices[idx] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 1] = Vertex{pos = w1, normal = wall_normal, color = wall_color, uv = wuv1, lm_uv = wlm_uv1, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 2] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx, prelit = wall_prelit}
+
+                    vertices[idx + 3] = Vertex{pos = w0, normal = wall_normal, color = wall_color, uv = wuv0, lm_uv = wlm_uv0, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 4] = Vertex{pos = w3, normal = wall_normal, color = wall_color, uv = wuv3, lm_uv = wlm_uv3, tex_index = wall_tex_idx, prelit = wall_prelit}
+                    vertices[idx + 5] = Vertex{pos = w2, normal = wall_normal, color = wall_color, uv = wuv2, lm_uv = wlm_uv2, tex_index = wall_tex_idx, prelit = wall_prelit}
 
                     idx += 6
                 }

@@ -5,6 +5,14 @@ import vk "vendor:vulkan"
 cleanup_vulkan :: proc(ctx: ^Context) {
     vk.DeviceWaitIdle(ctx.device)
 
+    // Walkability grid
+    walkability_destroy(&ctx.walkability)
+
+    // Free client path
+    if ctx.client_net.path != nil {
+        delete(ctx.client_net.path)
+    }
+
     // UI resources
     ui_cleanup(ctx)
 
@@ -21,6 +29,15 @@ cleanup_vulkan :: proc(ctx: ^Context) {
     // Vertex buffer
     vk.DestroyBuffer(ctx.device, ctx.vertex_buffer, nil)
     vk.FreeMemory(ctx.device, ctx.vertex_memory, nil)
+
+    // Sun indicator
+    cleanup_sun_indicator(ctx)
+
+    // Player marker
+    cleanup_player_marker(ctx)
+
+    // Normal arrows
+    cleanup_normal_arrows(ctx)
 
     // Command pool
     vk.DestroyCommandPool(ctx.device, ctx.command_pool, nil)
@@ -42,15 +59,33 @@ cleanup_vulkan :: proc(ctx: ^Context) {
     vk.FreeMemory(ctx.device, ctx.descriptor_buffer_memory, nil)
     vk.DestroyDescriptorSetLayout(ctx.device, ctx.bindless_layout, nil)
 
-    // Lightmap descriptor buffer
-    if ctx.lightmap_descriptor_buffer != 0 {
-        vk.DestroyBuffer(ctx.device, ctx.lightmap_descriptor_buffer, nil)
+    // Map atlas descriptor buffers
+    if ctx.shadow_descriptor_buffer != 0 {
+        vk.DestroyBuffer(ctx.device, ctx.shadow_descriptor_buffer, nil)
     }
-    if ctx.lightmap_descriptor_buffer_memory != 0 {
-        vk.FreeMemory(ctx.device, ctx.lightmap_descriptor_buffer_memory, nil)
+    if ctx.shadow_descriptor_memory != 0 {
+        vk.FreeMemory(ctx.device, ctx.shadow_descriptor_memory, nil)
     }
-    if ctx.lightmap_layout != 0 {
-        vk.DestroyDescriptorSetLayout(ctx.device, ctx.lightmap_layout, nil)
+    if ctx.light_descriptor_buffer != 0 {
+        vk.DestroyBuffer(ctx.device, ctx.light_descriptor_buffer, nil)
+    }
+    if ctx.light_descriptor_memory != 0 {
+        vk.FreeMemory(ctx.device, ctx.light_descriptor_memory, nil)
+    }
+    if ctx.lighting_descriptor_buffer != 0 {
+        vk.DestroyBuffer(ctx.device, ctx.lighting_descriptor_buffer, nil)
+    }
+    if ctx.lighting_descriptor_memory != 0 {
+        vk.FreeMemory(ctx.device, ctx.lighting_descriptor_memory, nil)
+    }
+    if ctx.half_lambert_descriptor_buffer != 0 {
+        vk.DestroyBuffer(ctx.device, ctx.half_lambert_descriptor_buffer, nil)
+    }
+    if ctx.half_lambert_descriptor_memory != 0 {
+        vk.FreeMemory(ctx.device, ctx.half_lambert_descriptor_memory, nil)
+    }
+    if ctx.map_atlas_layout != 0 {
+        vk.DestroyDescriptorSetLayout(ctx.device, ctx.map_atlas_layout, nil)
     }
 
     // Depth

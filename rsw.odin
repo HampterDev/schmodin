@@ -15,11 +15,6 @@ RSW_Object_Type :: enum i32 {
     EffectSrc = 4,
 }
 
-// Vector3 for RSW data (matches C++ vector3d)
-Vec3 :: struct #packed {
-    x, y, z: f32,
-}
-
 // Actor/Model info
 RSW_Actor :: struct {
     name:       [40]u8,

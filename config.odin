@@ -5,7 +5,7 @@ import "core:mem"
 
 CONFIG_FILE :: "schmodin.cfg"
 CONFIG_MAGIC :: u32(0x534D4F44)  // "SMOD"
-CONFIG_VERSION :: u32(2)
+CONFIG_VERSION :: u32(5)  // Bumped for mesh lighting (prelit) support
 
 // Persisted application configuration
 App_Config :: struct {
@@ -19,17 +19,17 @@ App_Config :: struct {
     window_height:      i32,
     fullscreen:         b32,
 
-    // Rendering toggles
+    // Rendering toggles (pre-computed map atlases)
     polygon_mode:       u32,    // 0=FILL, 1=LINE, 2=POINT
     height_factor:      f32,    // 0=flat, 1=normal height
     texture_enabled:    b32,
     tile_color_enabled: b32,
-    ambient_enabled:    b32,
-    shadowmap_enabled:  b32,
-    colormap_enabled:   b32,
-    lighting_enabled:   b32,
-    lightmap_posterize: b32,
-    fog_enabled:        b32,
+    shadow_enabled:     b32,    // Shadow atlas (lightmap intensity)
+    light_enabled:      b32,    // Light atlas (lightmap specular RGB)
+    lighting_enabled:      b32,    // Lighting atlas (N·L)
+    half_lambert_enabled:  b32,    // Half-Lambert atlas
+    prelit_enabled:        b32,    // Per-vertex mesh lighting (all triangles)
+    fog_enabled:           b32,
 }
 
 // Default configuration values
@@ -45,17 +45,17 @@ default_config :: proc() -> App_Config {
         window_height      = WINDOW_HEIGHT,
         fullscreen         = false,
 
-        // Rendering defaults
+        // Rendering defaults (pre-computed map atlases)
         polygon_mode       = 0,     // FILL
         height_factor      = 1.0,   // Normal height
         texture_enabled    = true,
         tile_color_enabled = true,
-        ambient_enabled    = true,
-        shadowmap_enabled  = true,
-        colormap_enabled   = true,
-        lighting_enabled   = false, // Directional lighting off by default
-        lightmap_posterize = true,  // Posterize for D3D7 look
-        fog_enabled        = true,
+        shadow_enabled     = true,  // Shadow atlas enabled
+        light_enabled      = true,  // Light atlas enabled
+        lighting_enabled      = true,  // Lighting atlas enabled
+        half_lambert_enabled  = false, // Half-Lambert disabled by default
+        prelit_enabled        = false, // Mesh lighting disabled by default
+        fog_enabled           = true,
     }
 }
 
@@ -117,11 +117,11 @@ apply_config_to_context :: proc(ctx: ^Context, config: App_Config) {
     ctx.height_factor = config.height_factor
     ctx.texture_enabled = bool(config.texture_enabled)
     ctx.tile_color_enabled = bool(config.tile_color_enabled)
-    ctx.ambient_enabled = bool(config.ambient_enabled)
-    ctx.shadowmap_enabled = bool(config.shadowmap_enabled)
-    ctx.colormap_enabled = bool(config.colormap_enabled)
+    ctx.shadow_enabled = bool(config.shadow_enabled)
+    ctx.light_enabled = bool(config.light_enabled)
     ctx.lighting_enabled = bool(config.lighting_enabled)
-    ctx.lightmap_posterize = bool(config.lightmap_posterize)
+    ctx.half_lambert_enabled = bool(config.half_lambert_enabled)
+    ctx.prelit_enabled = bool(config.prelit_enabled)
     ctx.fog_enabled = bool(config.fog_enabled)
 }
 
@@ -134,11 +134,11 @@ extract_config_from_context :: proc(ctx: ^Context) -> App_Config {
     config.height_factor = ctx.height_factor
     config.texture_enabled = b32(ctx.texture_enabled)
     config.tile_color_enabled = b32(ctx.tile_color_enabled)
-    config.ambient_enabled = b32(ctx.ambient_enabled)
-    config.shadowmap_enabled = b32(ctx.shadowmap_enabled)
-    config.colormap_enabled = b32(ctx.colormap_enabled)
+    config.shadow_enabled = b32(ctx.shadow_enabled)
+    config.light_enabled = b32(ctx.light_enabled)
     config.lighting_enabled = b32(ctx.lighting_enabled)
-    config.lightmap_posterize = b32(ctx.lightmap_posterize)
+    config.half_lambert_enabled = b32(ctx.half_lambert_enabled)
+    config.prelit_enabled = b32(ctx.prelit_enabled)
     config.fog_enabled = b32(ctx.fog_enabled)
 
     return config

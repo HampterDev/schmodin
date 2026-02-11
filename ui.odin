@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import "core:mem"
 import mu "vendor:microui"
 import vk "vendor:vulkan"
@@ -482,7 +483,7 @@ get_map_display_name :: proc(path: string) -> string {
 ui_build :: proc(ctx: ^Context) {
     mu.begin(&g_mu_ctx)
 
-    if mu.begin_window(&g_mu_ctx, "Ground Rendering", {10, 10, 220, 360}) {
+    if mu.begin_window(&g_mu_ctx, "Ground Rendering", {10, 10, 220, 430}) {
         mu.layout_row(&g_mu_ctx, {-1}, 0)
 
         // Map selector
@@ -520,15 +521,15 @@ ui_build :: proc(ctx: ^Context) {
         mu.label(&g_mu_ctx, "Height Factor")
         mu.slider(&g_mu_ctx, &ctx.height_factor, 0.0, 1.0, 0.01)
 
-        // Rendering components
-        mu.label(&g_mu_ctx, "Components:")
+        // Pre-computed map atlas toggles
+        mu.label(&g_mu_ctx, "Map Atlases:")
         mu.checkbox(&g_mu_ctx, "Texture", &ctx.texture_enabled)
         mu.checkbox(&g_mu_ctx, "Tile Color", &ctx.tile_color_enabled)
-        mu.checkbox(&g_mu_ctx, "Ambient", &ctx.ambient_enabled)
-        mu.checkbox(&g_mu_ctx, "Lighting", &ctx.lighting_enabled)
-        mu.checkbox(&g_mu_ctx, "Shadow Map", &ctx.shadowmap_enabled)
-        mu.checkbox(&g_mu_ctx, "Color Lightmap", &ctx.colormap_enabled)
-        mu.checkbox(&g_mu_ctx, "LM Posterize", &ctx.lightmap_posterize)
+        mu.checkbox(&g_mu_ctx, "Shadow", &ctx.shadow_enabled)
+        mu.checkbox(&g_mu_ctx, "Light", &ctx.light_enabled)
+        mu.checkbox(&g_mu_ctx, "Lighting (N·L)", &ctx.lighting_enabled)
+        mu.checkbox(&g_mu_ctx, "Half-Lambert", &ctx.half_lambert_enabled)
+        mu.checkbox(&g_mu_ctx, "Mesh Lighting", &ctx.prelit_enabled)
         mu.checkbox(&g_mu_ctx, "Fog (F)", &ctx.fog_enabled)
 
         // Polygon mode buttons
@@ -543,6 +544,41 @@ ui_build :: proc(ctx: ^Context) {
         if .SUBMIT in mu.button(&g_mu_ctx, "Point") {
             ctx.polygon_mode = 2
         }
+
+        // Light direction debug info
+        mu.layout_row(&g_mu_ctx, {-1}, 0)
+        mu.label(&g_mu_ctx, "Light Direction (RSW):")
+
+        // Display vector values
+        light_str := fmt.tprintf("  (%.2f, %.2f, %.2f)", ctx.light_dir.x, ctx.light_dir.y, ctx.light_dir.z)
+        mu.label(&g_mu_ctx, light_str)
+
+        // Simple compass indicator based on XZ angle
+        angle := math.atan2(ctx.light_dir.z, ctx.light_dir.x) * (180.0 / math.PI)
+        compass: string
+        if angle >= -22.5 && angle < 22.5 {
+            compass = "  -> E"
+        } else if angle >= 22.5 && angle < 67.5 {
+            compass = "  -> SE"
+        } else if angle >= 67.5 && angle < 112.5 {
+            compass = "  -> S"
+        } else if angle >= 112.5 && angle < 157.5 {
+            compass = "  -> SW"
+        } else if angle >= 157.5 || angle < -157.5 {
+            compass = "  -> W"
+        } else if angle >= -157.5 && angle < -112.5 {
+            compass = "  -> NW"
+        } else if angle >= -112.5 && angle < -67.5 {
+            compass = "  -> N"
+        } else {
+            compass = "  -> NE"
+        }
+        elevation := fmt.tprintf("%s (elev: %.0f°)", compass, math.asin(ctx.light_dir.y) * (180.0 / math.PI))
+        mu.label(&g_mu_ctx, elevation)
+
+        // Debug visualization toggles
+        mu.checkbox(&g_mu_ctx, "Show Sun", &ctx.show_light_indicator)
+        mu.checkbox(&g_mu_ctx, "Show Normals", &ctx.show_normal_arrows)
 
         mu.end_window(&g_mu_ctx)
     }

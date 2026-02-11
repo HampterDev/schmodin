@@ -9,6 +9,8 @@ package main
 // - Bindless Descriptors (descriptor indexing)
 
 import "core:os"
+import "core:net"
+import shared "app:shared"
 import vk "vendor:vulkan"
 import "vendor:glfw"
 
@@ -30,12 +32,39 @@ main :: proc() {
 
     log("Starting application...")
 
+    // Parse command-line args: --client IP PORT
+    mode := Net_Mode.Client
+    port := shared.DEFAULT_PORT
+    server_ip := net.IP4_Address{127, 0, 0, 1}
+
+    args := os.args
+    i := 1
+    for i < len(args) {
+        if args[i] == "--client" {
+            mode = .Client
+            if i + 1 < len(args) {
+                if ip, ok := shared.parse_ip4_string(args[i + 1]); ok {
+                    server_ip = ip
+                    i += 1
+                }
+            }
+            if i + 1 < len(args) {
+                if p, ok := shared.parse_port_string(args[i + 1]); ok {
+                    port = p
+                    i += 1
+                }
+            }
+        }
+        i += 1
+    }
+
+    ctx: Context
+    ctx.net_mode = mode
+
     // Test GRF, RSW, and GND reading
     test_grf()
     test_rsw()
     test_gnd()
-
-    ctx: Context
 
     if !init_window(&ctx) {
         log("Failed to initialize window")
@@ -58,6 +87,20 @@ main :: proc() {
     // Apply deferred fullscreen (after Vulkan is ready)
     if ctx.start_fullscreen {
         toggle_fullscreen(&ctx)
+    }
+
+    // Initialize networking if client mode
+    if mode == .Client {
+        // Set player starting position at map center, init follow camera
+        ctx.player_pos = ctx.camera_pos
+        ctx.camera_yaw = 0
+        ctx.camera_pitch = -0.5
+        ctx.camera_distance = 400.0
+
+        if !client_init(&ctx, server_ip, port) {
+            log("Failed to initialize client")
+            return
+        }
     }
 
     log("Entering main loop")
@@ -88,8 +131,8 @@ init_vulkan :: proc(ctx: ^Context) -> bool {
     if !create_depth_resources(ctx)    { log("Failed: create_depth_resources"); return false }
     log("Creating bindless resources...")
     if !create_bindless_resources(ctx) { log("Failed: create_bindless_resources"); return false }
-    log("Creating lightmap descriptor...")
-    if !create_lightmap_descriptor(ctx) { log("Failed: create_lightmap_descriptor"); return false }
+    log("Creating map atlas descriptors...")
+    if !create_map_atlas_descriptors(ctx) { log("Failed: create_map_atlas_descriptors"); return false }
     log("Creating pipeline...")
     if !create_pipeline(ctx)           { log("Failed: create_pipeline"); return false }
     log("Creating command resources...")
@@ -98,6 +141,10 @@ init_vulkan :: proc(ctx: ^Context) -> bool {
     if !create_sync_objects(ctx)       { log("Failed: create_sync_objects"); return false }
     log("Creating vertex buffer...")
     if !create_vertex_buffer(ctx)      { log("Failed: create_vertex_buffer"); return false }
+    log("Creating sun indicator...")
+    if !create_sun_indicator(ctx)      { log("Failed: create_sun_indicator"); return false }
+    log("Creating player marker...")
+    if !create_player_marker(ctx)      { log("Failed: create_player_marker"); return false }
     log("Initializing UI...")
     if !ui_init(ctx)                   { log("Failed: ui_init"); return false }
 

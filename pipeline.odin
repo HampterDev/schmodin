@@ -18,12 +18,23 @@ create_pipeline :: proc(ctx: ^Context) -> bool {
         size       = size_of(Push_Constants),
     }
 
-    // Pipeline layout with bindless set (set 0) and lightmap set (set 1)
-    layouts := [2]vk.DescriptorSetLayout{ctx.bindless_layout, ctx.lightmap_layout}
+    // Pipeline layout with:
+    // Set 0: bindless textures
+    // Set 1: shadow atlas
+    // Set 2: light atlas
+    // Set 3: lighting atlas
+    // Set 4: half-lambert atlas
+    layouts := [5]vk.DescriptorSetLayout{
+        ctx.bindless_layout,
+        ctx.map_atlas_layout,  // shadow
+        ctx.map_atlas_layout,  // light
+        ctx.map_atlas_layout,  // lighting
+        ctx.map_atlas_layout,  // half-lambert
+    }
 
     layout_info := vk.PipelineLayoutCreateInfo{
         sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-        setLayoutCount         = 2,
+        setLayoutCount         = 5,
         pSetLayouts            = &layouts[0],
         pushConstantRangeCount = 1,
         pPushConstantRanges    = &push_constant_range,
@@ -62,7 +73,7 @@ create_pipeline :: proc(ctx: ^Context) -> bool {
         codeSize               = len(VERT_SPV_RAW),
         pCode                  = raw_data(vert_aligned),
         pName                  = "main",
-        setLayoutCount         = 2,
+        setLayoutCount         = 5,
         pSetLayouts            = &layouts[0],
         pushConstantRangeCount = 1,
         pPushConstantRanges    = &push_constant_range,
@@ -78,7 +89,7 @@ create_pipeline :: proc(ctx: ^Context) -> bool {
         codeSize               = len(FRAG_SPV_RAW),
         pCode                  = raw_data(frag_aligned),
         pName                  = "main",
-        setLayoutCount         = 2,
+        setLayoutCount         = 5,
         pSetLayouts            = &layouts[0],
         pushConstantRangeCount = 1,
         pPushConstantRanges    = &push_constant_range,

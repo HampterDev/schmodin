@@ -5,12 +5,12 @@
 // Vertex struct - must match Odin Vertex struct
 struct Vertex {
     vec3 pos;
-    vec3 normal;     // Surface normal for directional lighting
+    vec3 normal;
     vec3 color;
     vec2 uv;
-    vec2 lm_uv;      // Lightmap UV coordinates
+    vec2 lm_uv;      // Lightmap/atlas UV coordinates
     uint tex_index;
-    uint _padding;
+    float prelit;    // Pre-computed half-lambert lighting for all triangles
 };
 
 // Vertex buffer accessed via buffer device address
@@ -19,33 +19,22 @@ layout(buffer_reference, scalar) readonly buffer VertexBuffer {
 };
 
 layout(push_constant) uniform PushConstants {
-    mat4 mvp;                   // Model-View-Projection matrix (64 bytes)
-    VertexBuffer vertices;      // Buffer device address (8 bytes)
-    uint texture_index;
-    uint _pad0;
-    vec3 ambient;
-    float _pad1;
-    vec3 diffuse;
-    float _pad2;
-    // Fog parameters
-    vec3 camera_pos;
-    uint fog_enabled;
-    vec3 fog_color;
-    float fog_start;
-    float fog_end;
-    float height_factor;
-    // Rendering component toggles
-    uint texture_enabled;
-    uint tile_color_enabled;
-    uint ambient_enabled;
-    uint shadowmap_enabled;
-    uint colormap_enabled;
-    uint lighting_enabled;
-    uint lightmap_posterize;
-    uint _pad_toggle;
-    // Directional light parameters
-    vec3 light_dir;
-    float _pad3;
+    mat4 mvp;                   // offset 0, 64 bytes
+    VertexBuffer vertices;      // offset 64, 8 bytes
+    uvec2 _pad0;                // offset 72, 8 bytes (align camera_pos to 16)
+    vec3 camera_pos;            // offset 80, 12 bytes
+    uint fog_enabled;           // offset 92, 4 bytes
+    vec3 fog_color;             // offset 96, 12 bytes
+    float fog_start;            // offset 108, 4 bytes
+    float fog_end;              // offset 112, 4 bytes
+    float height_factor;        // offset 116, 4 bytes
+    uint texture_enabled;       // offset 120, 4 bytes
+    uint tile_color_enabled;    // offset 124, 4 bytes
+    uint shadow_enabled;        // offset 128, 4 bytes
+    uint light_enabled;         // offset 132, 4 bytes
+    uint lighting_enabled;      // offset 136, 4 bytes
+    uint half_lambert_enabled;  // offset 140, 4 bytes
+    uint prelit_enabled;        // offset 144, 4 bytes
 } pc;
 
 layout(location = 0) out vec3 frag_color;
@@ -53,7 +42,7 @@ layout(location = 1) out vec2 frag_uv;
 layout(location = 2) out vec2 frag_lm_uv;
 layout(location = 3) flat out uint frag_texture_index;
 layout(location = 4) out vec3 frag_world_pos;
-layout(location = 5) out vec3 frag_normal;
+layout(location = 5) out float frag_prelit;
 
 void main() {
     Vertex vtx = pc.vertices.v[gl_VertexIndex];
@@ -68,5 +57,5 @@ void main() {
     frag_lm_uv = vtx.lm_uv;
     frag_texture_index = vtx.tex_index;
     frag_world_pos = pos;  // Pass world position for range-based fog
-    frag_normal = vtx.normal;  // Pass normal for directional lighting
+    frag_prelit = vtx.prelit;  // Pass pre-computed lighting
 }

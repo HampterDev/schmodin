@@ -95,8 +95,9 @@ create_bindless_resources :: proc(ctx: ^Context) -> bool {
     return true
 }
 
-create_lightmap_descriptor :: proc(ctx: ^Context) -> bool {
-    // Descriptor set layout for lightmap (set 1, binding 0)
+// Create descriptor layout and buffers for map atlases (shadow, light, lighting)
+create_map_atlas_descriptors :: proc(ctx: ^Context) -> bool {
+    // Shared descriptor set layout for all atlas textures (1 combined image sampler each)
     binding := vk.DescriptorSetLayoutBinding{
         binding         = 0,
         descriptorType  = .COMBINED_IMAGE_SAMPLER,
@@ -111,14 +112,14 @@ create_lightmap_descriptor :: proc(ctx: ^Context) -> bool {
         pBindings    = &binding,
     }
 
-    if vk.CreateDescriptorSetLayout(ctx.device, &layout_info, nil, &ctx.lightmap_layout) != .SUCCESS {
-        log("Failed to create lightmap descriptor set layout")
+    if vk.CreateDescriptorSetLayout(ctx.device, &layout_info, nil, &ctx.map_atlas_layout) != .SUCCESS {
+        log("Failed to create map atlas descriptor set layout")
         return false
     }
 
     // Get descriptor set layout size
     layout_size: vk.DeviceSize
-    vk.GetDescriptorSetLayoutSizeEXT(ctx.device, ctx.lightmap_layout, &layout_size)
+    vk.GetDescriptorSetLayoutSizeEXT(ctx.device, ctx.map_atlas_layout, &layout_size)
 
     // Get descriptor buffer properties for alignment
     desc_buffer_props := vk.PhysicalDeviceDescriptorBufferPropertiesEXT{
@@ -130,68 +131,83 @@ create_lightmap_descriptor :: proc(ctx: ^Context) -> bool {
     }
     vk.GetPhysicalDeviceProperties2(ctx.physical_device, &props)
 
-    // Align size to descriptor buffer offset alignment
     alignment := desc_buffer_props.descriptorBufferOffsetAlignment
-    ctx.lightmap_descriptor_buffer_size = (layout_size + alignment - 1) & ~(alignment - 1)
+    ctx.map_descriptor_size = (layout_size + alignment - 1) & ~(alignment - 1)
 
-    // Create descriptor buffer
-    buffer_info := vk.BufferCreateInfo{
-        sType = .BUFFER_CREATE_INFO,
-        size  = ctx.lightmap_descriptor_buffer_size,
-        usage = {.RESOURCE_DESCRIPTOR_BUFFER_EXT, .SHADER_DEVICE_ADDRESS},
+    // Helper to create a descriptor buffer
+    create_atlas_descriptor_buffer :: proc(ctx: ^Context, buffer: ^vk.Buffer, memory: ^vk.DeviceMemory, address: ^vk.DeviceAddress) -> bool {
+        buffer_info := vk.BufferCreateInfo{
+            sType = .BUFFER_CREATE_INFO,
+            size  = ctx.map_descriptor_size,
+            usage = {.RESOURCE_DESCRIPTOR_BUFFER_EXT, .SHADER_DEVICE_ADDRESS},
+        }
+
+        if vk.CreateBuffer(ctx.device, &buffer_info, nil, buffer) != .SUCCESS {
+            return false
+        }
+
+        mem_requirements: vk.MemoryRequirements
+        vk.GetBufferMemoryRequirements(ctx.device, buffer^, &mem_requirements)
+
+        flags_alloc := vk.MemoryAllocateFlagsInfo{
+            sType = .MEMORY_ALLOCATE_FLAGS_INFO,
+            flags = {.DEVICE_ADDRESS},
+        }
+
+        alloc_info := vk.MemoryAllocateInfo{
+            sType           = .MEMORY_ALLOCATE_INFO,
+            pNext           = &flags_alloc,
+            allocationSize  = mem_requirements.size,
+            memoryTypeIndex = find_memory_type(ctx, mem_requirements.memoryTypeBits, {.HOST_VISIBLE, .HOST_COHERENT}),
+        }
+
+        if vk.AllocateMemory(ctx.device, &alloc_info, nil, memory) != .SUCCESS {
+            return false
+        }
+
+        vk.BindBufferMemory(ctx.device, buffer^, memory^, 0)
+
+        address_info := vk.BufferDeviceAddressInfo{
+            sType  = .BUFFER_DEVICE_ADDRESS_INFO,
+            buffer = buffer^,
+        }
+        address^ = vk.GetBufferDeviceAddress(ctx.device, &address_info)
+
+        return true
     }
 
-    if vk.CreateBuffer(ctx.device, &buffer_info, nil, &ctx.lightmap_descriptor_buffer) != .SUCCESS {
-        log("Failed to create lightmap descriptor buffer")
+    // Create descriptor buffers for all three atlases
+    if !create_atlas_descriptor_buffer(ctx, &ctx.shadow_descriptor_buffer, &ctx.shadow_descriptor_memory, &ctx.shadow_descriptor_address) {
+        log("Failed to create shadow descriptor buffer")
+        return false
+    }
+    if !create_atlas_descriptor_buffer(ctx, &ctx.light_descriptor_buffer, &ctx.light_descriptor_memory, &ctx.light_descriptor_address) {
+        log("Failed to create light descriptor buffer")
+        return false
+    }
+    if !create_atlas_descriptor_buffer(ctx, &ctx.lighting_descriptor_buffer, &ctx.lighting_descriptor_memory, &ctx.lighting_descriptor_address) {
+        log("Failed to create lighting descriptor buffer")
+        return false
+    }
+    if !create_atlas_descriptor_buffer(ctx, &ctx.half_lambert_descriptor_buffer, &ctx.half_lambert_descriptor_memory, &ctx.half_lambert_descriptor_address) {
+        log("Failed to create half-lambert descriptor buffer")
         return false
     }
 
-    // Allocate memory
-    mem_requirements: vk.MemoryRequirements
-    vk.GetBufferMemoryRequirements(ctx.device, ctx.lightmap_descriptor_buffer, &mem_requirements)
-
-    flags_alloc := vk.MemoryAllocateFlagsInfo{
-        sType = .MEMORY_ALLOCATE_FLAGS_INFO,
-        flags = {.DEVICE_ADDRESS},
-    }
-
-    alloc_info := vk.MemoryAllocateInfo{
-        sType           = .MEMORY_ALLOCATE_INFO,
-        pNext           = &flags_alloc,
-        allocationSize  = mem_requirements.size,
-        memoryTypeIndex = find_memory_type(ctx, mem_requirements.memoryTypeBits, {.HOST_VISIBLE, .HOST_COHERENT}),
-    }
-
-    if vk.AllocateMemory(ctx.device, &alloc_info, nil, &ctx.lightmap_descriptor_buffer_memory) != .SUCCESS {
-        log("Failed to allocate lightmap descriptor buffer memory")
-        return false
-    }
-
-    vk.BindBufferMemory(ctx.device, ctx.lightmap_descriptor_buffer, ctx.lightmap_descriptor_buffer_memory, 0)
-
-    // Get buffer device address
-    address_info := vk.BufferDeviceAddressInfo{
-        sType  = .BUFFER_DEVICE_ADDRESS_INFO,
-        buffer = ctx.lightmap_descriptor_buffer,
-    }
-    ctx.lightmap_descriptor_buffer_address = vk.GetBufferDeviceAddress(ctx.device, &address_info)
-
-    log("Lightmap descriptor layout and buffer created")
+    log("Map atlas descriptor layout and buffers created")
     return true
 }
 
-// Update the lightmap descriptor buffer with the lightmap atlas
-update_lightmap_descriptor :: proc(ctx: ^Context) {
-    if ctx.lightmap_atlas.view == 0 || ctx.lightmap_sampler == 0 {
+// Update a single atlas descriptor buffer
+update_atlas_descriptor :: proc(ctx: ^Context, atlas: ^Texture, memory: vk.DeviceMemory) {
+    if atlas.view == 0 || ctx.map_sampler == 0 {
         return
     }
 
-    // Map descriptor buffer
     data: rawptr
-    vk.MapMemory(ctx.device, ctx.lightmap_descriptor_buffer_memory, 0, ctx.lightmap_descriptor_buffer_size, {}, &data)
-    defer vk.UnmapMemory(ctx.device, ctx.lightmap_descriptor_buffer_memory)
+    vk.MapMemory(ctx.device, memory, 0, ctx.map_descriptor_size, {}, &data)
+    defer vk.UnmapMemory(ctx.device, memory)
 
-    // Get descriptor size
     desc_props := vk.PhysicalDeviceDescriptorBufferPropertiesEXT{
         sType = .PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT,
     }
@@ -203,10 +219,9 @@ update_lightmap_descriptor :: proc(ctx: ^Context) {
 
     descriptor_size := desc_props.combinedImageSamplerDescriptorSize
 
-    // Write lightmap descriptor
     image_info := vk.DescriptorImageInfo{
-        sampler     = ctx.lightmap_sampler,
-        imageView   = ctx.lightmap_atlas.view,
+        sampler     = ctx.map_sampler,
+        imageView   = atlas.view,
         imageLayout = .SHADER_READ_ONLY_OPTIMAL,
     }
 
@@ -217,5 +232,13 @@ update_lightmap_descriptor :: proc(ctx: ^Context) {
     }
 
     vk.GetDescriptorEXT(ctx.device, &desc_info, descriptor_size, data)
-    log("Lightmap descriptor buffer updated")
+}
+
+// Update all map atlas descriptors
+update_map_atlas_descriptors :: proc(ctx: ^Context) {
+    update_atlas_descriptor(ctx, &ctx.shadow_atlas, ctx.shadow_descriptor_memory)
+    update_atlas_descriptor(ctx, &ctx.light_atlas, ctx.light_descriptor_memory)
+    update_atlas_descriptor(ctx, &ctx.lighting_atlas, ctx.lighting_descriptor_memory)
+    update_atlas_descriptor(ctx, &ctx.half_lambert_atlas, ctx.half_lambert_descriptor_memory)
+    log("Map atlas descriptor buffers updated")
 }
